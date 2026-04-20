@@ -30,11 +30,11 @@ app/src/main/java/io/legado/app/data/repository/
 
 ### Repository 与 DAO 的区别
 
-| 维度 | DAO | Repository |
-|------|-----|-----------|
-| **职责** | 数据存取 | 业务逻辑 + 数据存取 |
-| **接口** | 数据库操作 | 领域操作 |
-| **抽象** | 底层实现 | 用例驱动 |
+| 维度     | DAO                | Repository              |
+| ------ | ------------------ | ----------------------- |
+| **职责** | 数据存取               | 业务逻辑 + 数据存取             |
+| **接口** | 数据库操作              | 领域操作                    |
+| **抽象** | 底层实现               | 用例驱动                    |
 | **依赖** | ViewModel 直接依赖 DAO | ViewModel 依赖 Repository |
 
 ## 核心 Repository 分析
@@ -66,11 +66,11 @@ class BookRepository(
 
 **设计分析**:
 
-| 设计 | 原理 | 好处 |
-|------|------|------|
-| 构造器注入 DAO | 依赖反转 | 可替换实现 |
-| 封装组合操作 | 事务逻辑内聚 | 避免 ViewModel 重复编写 |
-| 暴露 Flow | 响应式数据流 | UI 自动感知变化 |
+| 设计        | 原理     | 好处                |
+| --------- | ------ | ----------------- |
+| 构造器注入 DAO | 依赖反转   | 可替换实现             |
+| 封装组合操作    | 事务逻辑内聚 | 避免 ViewModel 重复编写 |
+| 暴露 Flow   | 响应式数据流 | UI 自动感知变化         |
 
 ### SearchRepository
 
@@ -101,7 +101,7 @@ class SearchRepositoryImpl(
 
 **设计分析**:
 
-- **接口与实现分离**: `SearchRepository` 是接口，`SearchRepositoryImpl` 是实现
+- **接口与实现分离**: `SearchRepository` 是接口，*`SearchRepositoryImpl`* 是实现
 - **并发搜索**: 使用 `async/await` 并发查询多个书源
 - **First() 转换**: Flow → List 的简单转换
 
@@ -157,11 +157,11 @@ class BookshelfViewModel(
 
 **设计分析**:
 
-| 转换 | 原理 |
-|------|------|
-| `Flow` → `StateFlow` | Compose 需要 StateFlow 观察 |
-| `viewModelScope` | 生命周期绑定，ViewModel 销毁时取消 |
-| `SharingStarted.WhileSubscribed(5000)` | 新订阅前保留旧数据 5 秒 |
+| 转换                                     | 原理                      |
+| -------------------------------------- | ----------------------- |
+| `Flow` → `StateFlow`                   | Compose 需要 StateFlow 观察 |
+| `viewModelScope`                       | 生命周期绑定，ViewModel 销毁时取消  |
+| `SharingStarted.WhileSubscribed(5000)` | 新订阅前保留旧数据 5 秒           |
 
 ## 数据流完整链路
 
@@ -203,6 +203,7 @@ class BookshelfViewModel(
 ```
 
 **触发时机**:
+
 - 插入/更新/删除数据时
 - Flow 会自动发射最新查询结果
 
@@ -215,10 +216,11 @@ class BookshelfViewModel(
 
 ## 相关文件
 
-| 文件 | 说明 |
-|------|------|
-| `data/repository/BookRepository.kt` | 书籍仓库 |
-| `data/repository/SearchRepository.kt` | 搜索仓库接口 |
-| `data/repository/SearchRepositoryImpl.kt` | 搜索仓库实现 |
-| `di/appModule.kt` | Koin 注入配置 |
+| 文件                                        | 说明           |
+| ----------------------------------------- | ------------ |
+| `data/repository/BookRepository.kt`       | 书籍仓库         |
+| `data/repository/SearchRepository.kt`     | 搜索仓库接口       |
+| `data/repository/SearchRepositoryImpl.kt` | 搜索仓库实现       |
+| `di/appModule.kt`                         | Koin 注入配置    |
 | `ui/main/bookshelf/BookshelfViewModel.kt` | 书架 ViewModel |
+

@@ -44,6 +44,12 @@ qa/
 - Q1: 什么是依赖？跟继承有什么区别？（含对比图）
 - Q2: Koin 的 get() 函数是如何工作的？
 - Q3: 什么叫 Flow 响应式数据流？（含完整流程图）
+- Q4: Repository 和 Service、DAO 和 Mapper 有什么区别？（含架构对比图）
+- Q5: BookRepository.kt 是什么功能？（含方法流程图）
+- Q6: SearchRepository 接口的实现类在哪？（含依赖注入图）
+- Q7: Koin 依赖注入是什么？（含工作流程图）
+- Q8: Koin 依赖注入关键字含义和语法？（含语法对比图）
+- Q9: AppDatabase 和 DatabaseMigrations 数据库配置与迁移？（含迁移版本图）
 
 ## 查看特定章节
 
