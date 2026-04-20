@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug)",
+      "Bash(./gradlew --stop)",
+      "Bash(./gradlew clean *)",
+      "WebSearch",
+      "Bash(./gradlew assembleDebug --no-daemon)"
+    ]
+  }
+}
