@@ -8,47 +8,92 @@
 
 ```
 app/src/main/java/io/legado/app/model/analyzeRule/
-├── RuleAnalyzer.kt       # 规则分析器入口
+├── AnalyzeRule.kt          # 规则解析入口（真正入口！）
 ├── AnalyzeByXPath.kt      # XPath 解析
 ├── AnalyzeByJSoup.kt      # JSoup 解析
-├── AnalyzeByRegex.kt     # 正则解析
-├── AnalyzeByJSonPath.kt  # JSON 解析
-├── AnalyzeUrl.kt         # URL 分析
-├── RuleData.kt          # 规则数据模型
-└── RuleDataInterface.kt  # 规则接口
+├── AnalyzeByRegex.kt      # 正则解析
+├── AnalyzeByJSonPath.kt   # JSON 解析
+├── AnalyzeUrl.kt          # URL 分析
+├── RuleAnalyzer.kt        # 规则字符串切割工具
+├── RuleData.kt            # 规则数据模型
+└── RuleDataInterface.kt   # 规则接口
 ```
 
-## 核心组件
+## 真正的解析入口：AnalyzeRule
 
-### RuleAnalyzer - 规则分析器入口
+**文件**: `model/analyzeRule/AnalyzeRule.kt`
+
+`AnalyzeRule` 才是真正的**解析入口类**，负责：
+
+1. 接收书源规则和数据内容
+2. 调用 `RuleAnalyzer` 切分规则
+3. 分发到具体解析器（XPath/JSoup/Regex/JSON）
+
+**解析流程**:
+
+```
+搜索/获取书籍
+    ↓
+WebBook/BookInfo.analyzeBookInfo() ← 发起解析
+    ↓
+AnalyzeRule.setContent(content, baseUrl) ← 设置解析内容
+    ↓
+analyzeXPath() / analyzeJSoup() / analyzeRegex() / analyzeJson() ← 选择解析器
+    ↓
+RuleAnalyzer.splitRule() ← 切分规则字符串
+    ↓
+各解析器执行具体解析
+```
+
+**关键方法**:
+
+| 方法 | 作用 |
+|------|------|
+| `setContent(content, baseUrl)` | 设置待解析内容和基准 URL |
+| `analyzeXPath(rule)` | XPath 解析 |
+| `analyzeJSoup(rule)` | JSoup 解析 |
+| `analyzeRegex(rule)` | 正则解析 |
+| `analyzeJson(rule)` | JSON 解析 |
+
+## RuleAnalyzer vs AnalyzeRule
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    RuleAnalyzer                             │
+│  • 纯字符串切割工具                                         │
+│  • 按 @@ && || 分隔符切分规则字符串                        │
+│  • 不涉及具体解析逻辑                                       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓ 切割后的规则列表
+┌─────────────────────────────────────────────────────────────┐
+│                    AnalyzeRule                               │
+│  • 真正的解析入口                                           │
+│  • 持有 AnalyzeByXPath/JSoup/Regex/JSON 实例              │
+│  • 根据规则类型分发到对应解析器                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### RuleAnalyzer - 规则字符串切割工具
 
 **文件**: `model/analyzeRule/RuleAnalyzer.kt`
 
-**职责**: 统一入口，分发到具体解析器
+**职责**: 纯字符串切割工具，由 AnalyzeRule 调用
 
-**设计原理**:
+**为什么不用正则？**
+书源规则中包含 `&&` `\|\|` `@` 等字符，与正则语法冲突，所以手写遍历解析
 
-```
-RuleAnalyzer.analyzeBook()
-    ↓
-判断规则类型 (XPath/JSoup/Regex/JSON)
-    ↓
-调用对应解析器
-    ↓
-返回统一格式 Book
-```
+| 函数 | 作用 |
+|------|------|
+| `trim()` | 修剪规则前的 `@` 或空白 |
+| `splitRule()` | 按 `@@` `&&` `\|\|` 分隔符切分规则 |
+| `innerRule()` | 替换 `{$.xxx}` 内嵌规则 |
+| `chompBalanced()` | 处理 `[]` `()` 平衡嵌套 |
 
-**设计分析**:
-
-| 设计 | 原理 | 好处 |
-|------|------|------|
-| 统一入口 | Facade 模式 | 调用方无需关心具体解析器 |
-| 多解析器支持 | 策略模式 | 不同网站用不同解析方式 |
-| 返回统一格式 | 适配器模式 | 上层无需关心解析细节 |
+## 核心组件
 
 ### 解析器选择策略
 
-**打开** `RuleAnalyzer.kt`，查找 `analyzeBook()` 方法：
+根据网站特点选择合适的解析器：
 
 ```
 网站特点                    → 推荐解析器
@@ -81,6 +126,7 @@ API 返回 JSON              → JSONPath
 ```
 
 **学习要点**:
+
 - XPath 是 XML/HTML 的查询语言
 - 支持路径表达式、谓词、条件筛选
 - 比正则更易读和维护
@@ -104,6 +150,7 @@ API 返回 JSON              → JSONPath
 ```
 
 **学习要点**:
+
 - JSoup 比 XPath 更适合复杂 JavaScript 场景
 - 支持 CSS Selector，更符合前端开发者习惯
 - 内置 JavaScript 引擎执行动态 JS
@@ -126,6 +173,7 @@ API 返回 JSON              → JSONPath
 ```
 
 **学习要点**:
+
 - 正则适合结构不规则的文本
 - 但复杂正则难维护
 - 通常作为补充解析方式
@@ -208,6 +256,7 @@ rhino.eval("""
 ```
 
 **学习要点**:
+
 - JS 脚本在 Rhino 引擎中执行
 - 可以调用 Java 方法操作 Android API
 - 复杂书源的核心能力
