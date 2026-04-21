@@ -2,315 +2,207 @@
 
 ## 概述
 
-规则解析是 Legado 的**核心能力**，负责从网站抓取书籍信息。系统支持多种解析方式：XPath、JSoup、XPath、Regex、JSON。
-
-## 源码位置
-
-```
-app/src/main/java/io/legado/app/model/analyzeRule/
-├── AnalyzeRule.kt          # 规则解析入口（真正入口！）
-├── AnalyzeByXPath.kt      # XPath 解析
-├── AnalyzeByJSoup.kt      # JSoup 解析
-├── AnalyzeByRegex.kt      # 正则解析
-├── AnalyzeByJSonPath.kt   # JSON 解析
-├── AnalyzeUrl.kt          # URL 分析
-├── RuleAnalyzer.kt        # 规则字符串切割工具
-├── RuleData.kt            # 规则数据模型
-└── RuleDataInterface.kt   # 规则接口
-```
-
-## 真正的解析入口：AnalyzeRule
-
-**文件**: `model/analyzeRule/AnalyzeRule.kt`
-
-`AnalyzeRule` 才是真正的**解析入口类**，负责：
-
-1. 接收书源规则和数据内容
-2. 调用 `RuleAnalyzer` 切分规则
-3. 分发到具体解析器（XPath/JSoup/Regex/JSON）
-
-**解析流程**:
-
-```
-搜索/获取书籍
-    ↓
-WebBook/BookInfo.analyzeBookInfo() ← 发起解析
-    ↓
-AnalyzeRule.setContent(content, baseUrl) ← 设置解析内容
-    ↓
-analyzeXPath() / analyzeJSoup() / analyzeRegex() / analyzeJson() ← 选择解析器
-    ↓
-RuleAnalyzer.splitRule() ← 切分规则字符串
-    ↓
-各解析器执行具体解析
-```
-
-**关键方法**:
-
-| 方法 | 作用 |
-|------|------|
-| `setContent(content, baseUrl)` | 设置待解析内容和基准 URL |
-| `analyzeXPath(rule)` | XPath 解析 |
-| `analyzeJSoup(rule)` | JSoup 解析 |
-| `analyzeRegex(rule)` | 正则解析 |
-| `analyzeJson(rule)` | JSON 解析 |
-
-## RuleAnalyzer vs AnalyzeRule
+规则解析是 Legado 的**核心能力**，发生在**拿到网站返回的原始内容（HTML/JSON）之后**，负责从这些原始文本中提取需要的书籍数据。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    RuleAnalyzer                             │
-│  • 纯字符串切割工具                                         │
-│  • 按 @@ && || 分隔符切分规则字符串                        │
-│  • 不涉及具体解析逻辑                                       │
+│                    书源解析三阶段流程                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  阶段1：构造请求    阶段2：网络请求    阶段3：规则解析        │
+│  （URL拼接）        （OkHttp）        （AnalyzeRule）       │
+│       ↓                 ↓                  ↓                 │
+│  {{key}} {{page}}   拿到原始内容    用规则提取数据          │
+│                                                             │
 └─────────────────────────────────────────────────────────────┘
-                            ↓ 切割后的规则列表
+```
+
+## 核心入口：AnalyzeRule
+
+**文件**: `app/src/main/java/io/legado/app/model/analyzeRule/AnalyzeRule.kt`
+
+`AnalyzeRule` 是规则解析的**唯一入口**，所有规则解析都通过它完成。
+
+---
+
+## 完整数据流（重点）
+
+```
 ┌─────────────────────────────────────────────────────────────┐
-│                    AnalyzeRule                               │
-│  • 真正的解析入口                                           │
-│  • 持有 AnalyzeByXPath/JSoup/Regex/JSON 实例              │
-│  • 根据规则类型分发到对应解析器                             │
+│                      规则解析完整数据流                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. 调用方设置内容                                           │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ AnalyzeRule.setContent(html/json)                  │   │
+│  │ • 保存原始内容                                      │   │
+│  │ • 判断是 JSON 还是 HTML                             │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  2. 调用方发起解析请求                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ getStringList("规则字符串") 或 getString()         │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  3. splitSourceRule() 切分规则                              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 规则字符串 → [SourceRule列表]                      │   │
+│  │ • 识别规则前缀（@XPath: / @Json: / $.）           │   │
+│  │ • 确定每个规则的解析模式（Mode）                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  4. 循环遍历 SourceRule 列表                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ for (sourceRule in ruleList) {                     │   │
+│  │     result = when(sourceRule.mode) {               │   │
+│  │         Mode.Js      → evalJS()                   │   │
+│  │         Mode.Json    → getAnalyzeByJSonPath()     │   │
+│  │         Mode.XPath   → getAnalyzeByXPath()        │   │
+│  │         Mode.Default → getAnalyzeByJSoup()        │   │
+│  │     }                                              │   │
+│  │ }                                                  │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  5. 返回结果                                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ getStringList() → List<String>?                   │   │
+│  │ getString()     → String                          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  6. 调用方（WebBook/BookInfo）拿去展示/存储                  │
+│                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### RuleAnalyzer - 规则字符串切割工具
+---
 
-**文件**: `model/analyzeRule/RuleAnalyzer.kt`
+## 实际书源解析示例
 
-**职责**: 纯字符串切割工具，由 AnalyzeRule 调用
-
-**为什么不用正则？**
-书源规则中包含 `&&` `\|\|` `@` 等字符，与正则语法冲突，所以手写遍历解析
-
-| 函数 | 作用 |
-|------|------|
-| `trim()` | 修剪规则前的 `@` 或空白 |
-| `splitRule()` | 按 `@@` `&&` `\|\|` 分隔符切分规则 |
-| `innerRule()` | 替换 `{$.xxx}` 内嵌规则 |
-| `chompBalanced()` | 处理 `[]` `()` 平衡嵌套 |
-
-## 核心组件
-
-### 解析器选择策略
-
-根据网站特点选择合适的解析器：
-
-```
-网站特点                    → 推荐解析器
-─────────────────────────────────────────
-HTML 结构清晰              → XPath / JSoup
-需要执行 JS 获取数据        → JSoup + JS
-纯文本匹配                → Regex
-API 返回 JSON              → JSONPath
-复杂多步请求               → 自定义 JS
+**书源规则**：
+```json
+{
+  "ruleSearch": {
+    "name": "a.1@text",
+    "author": "p.1@text",
+    "coverUrl": "img@src",
+    "bookList": ".item"
+  }
+}
 ```
 
-## 解析器详解
-
-### 1. AnalyzeByXPath - XPath 解析
-
-**文件**: `model/analyzeRule/AnalyzeByXPath.kt`
-
-**原理**:
-
-1. 下载 HTML
-2. 使用 XPath 表达式提取元素
-3. 返回提取结果
-
-**XPath 示例**:
-
-```xpath
-//div[@class="book-list"]//a/@href          获取书籍链接
-//div[@class="title"]/text()                  获取标题
-//img[@class="cover"]/@src                    获取封面
-```
-
-**学习要点**:
-
-- XPath 是 XML/HTML 的查询语言
-- 支持路径表达式、谓词、条件筛选
-- 比正则更易读和维护
-
-### 2. AnalyzeByJSoup - JSoup 解析
-
-**文件**: `model/analyzeRule/AnalyzeByJSoup.kt`
-
-**原理**:
-
-1. 使用 JSoup 解析 HTML
-2. 支持 CSS Selector 选择器
-3. 可执行 JavaScript 获取动态内容
-
-**CSS Selector 示例**:
-
-```css
-.book-list a                    获取书籍链接
-.book-list .title               获取标题
-.cover@src                      获取封面
-```
-
-**学习要点**:
-
-- JSoup 比 XPath 更适合复杂 JavaScript 场景
-- 支持 CSS Selector，更符合前端开发者习惯
-- 内置 JavaScript 引擎执行动态 JS
-
-### 3. AnalyzeByRegex - 正则解析
-
-**文件**: `model/analyzeRule/AnalyzeByRegex.kt`
-
-**原理**:
-
-1. 使用正则表达式匹配文本
-2. 捕获分组提取数据
-
-**正则示例**:
-
-```regex
-书名：([^"]+)                捕获书名
-作者：([^"]+)                捕获作者
-章节：([^|]+)\|([^"]+)       捕获章节名和链接
-```
-
-**学习要点**:
-
-- 正则适合结构不规则的文本
-- 但复杂正则难维护
-- 通常作为补充解析方式
-
-### 4. AnalyzeByJSonPath - JSON 解析
-
-**文件**: `model/analyzeRule/AnalyzeByJSonPath.kt`
-
-**原理**:
-
-1. 解析 JSON 响应
-2. 使用 JSONPath 表达式提取数据
-
-**JSONPath 示例**:
-
-```jsonpath
-$.data.books[*].title          提取所有书名
-$.data[?(@.type==1)].url       提取类型为1的URL
-```
-
-## 规则数据结构
-
-### BookSource 中的规则字段
-
-**文件**: `data/entities/BookSource.kt`
-
-```kotlin
-data class BookSource(
-    // 搜索规则
-    val searchUrl: String?,       // 搜索 URL
-    val searchJs: String?,        // JS 增强搜索
-
-    // 目录规则
-    val catalogUrl: String?,      // 目录页 URL
-    val catalogJs: String?,       // JS 解析目录
-
-    // 内容规则
-    val contentPattern: String?,  // XPath/正则
-    val contentJs: String?,       // JS 处理正文
-)
-```
-
-**规则流程**:
+**解析流程**：
 
 ```
-searchUrl → 获取搜索页 → 解析书籍列表
-    ↓
-catalogUrl → 获取目录页 → 解析章节列表
-    ↓
-contentPattern → 获取正文页 → 解析正文内容
+原始HTML内容:
+<div class="item">
+  <a href="/book/1"><img src="/cover.jpg"/></a>
+  <a href="/book/1">斗破苍穹</a>
+  <p class="itemtxt"><p>天蚕土豆</p></p>
+</div>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+提取书名: getStringList("a.1@text")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+┌─────────────────────────────────────────────────────────────┐
+│ 1. setContent(html)                                        │
+│    → 保存原始HTML                                           │
+│                                                             │
+│ 2. getStringList("a.1@text")                              │
+│    → splitSourceRule() → [SourceRule("a.1@text", Default)]│
+│                                                             │
+│ 3. for循环 (只有1个SourceRule，只循环1次)                   │
+│    → Mode.Default → getAnalyzeByJSoup(content)             │
+│    → .getStringList("a.1@text")                          │
+│    → 返回: ["斗破苍穹"]                                    │
+└─────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+提取作者: getStringList("p.1@text")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+┌─────────────────────────────────────────────────────────────┐
+│ 同上流程，只是规则字符串不同                                 │
+│ → 返回: ["天蚕土豆"]                                       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## JS 增强解析
+---
 
-### 为什么需要 JS
-
-| 场景 | 纯 HTTP | JS 增强 |
-|------|---------|---------|
-| 静态 HTML | ✅ | ✅ |
-| 懒加载内容 | ❌ | ✅ |
-| 加密参数 | ❌ | ✅ |
-| 需要登录 | ❌ | ✅ |
-
-### JS 上下文
-
-**文件**: `model/SharedJsScope.kt`
-
-**原理**:
-
-```kotlin
-// Rhino JS 引擎
-val rhino = RhinoEngine()
-rhino.eval("""
-    function search(key) {
-        var result = [];
-        // 自定义搜索逻辑
-        return JSON.stringify(result);
-    }
-""")
-```
-
-**学习要点**:
-
-- JS 脚本在 Rhino 引擎中执行
-- 可以调用 Java 方法操作 Android API
-- 复杂书源的核心能力
-
-## 设计模式分析
-
-### 1. 策略模式
+## SourceRule 模式识别
 
 ```
-RuleAnalyzer (Context)
-    ↓
-├── AnalyzeByXPath (Strategy)
-├── AnalyzeByJSoup (Strategy)
-├── AnalyzeByRegex (Strategy)
-└── AnalyzeByJSonPath (Strategy)
+┌─────────────────────────────────────────────────────────────┐
+│                  SourceRule.mode 识别规则                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  规则前缀              → Mode        解析器                  │
+│  ────────────────────────────────────────────────────────  │
+│  @XPath:            → XPath      AnalyzeByXPath           │
+│  @Json:             → Json       AnalyzeByJSonPath        │
+│  $. 或 $[           → Json       AnalyzeByJSonPath        │
+│  / 开头             → XPath      AnalyzeByXPath            │
+│  @js: / <js>        → Js        Rhino JS 引擎            │
+│  无前缀             → Default    AnalyzeByJSoup            │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**好处**: 可互换解析算法，运行时选择
+---
 
-### 2. 责任链模式
+## 四大解析器
+
+| 解析器 | 用途 | 示例 |
+|--------|------|------|
+| **AnalyzeByJSoup** | HTML CSS选择器（默认） | `.book-list a`, `a.1@text` |
+| **AnalyzeByXPath** | XPath表达式 | `//div[@class="book"]//a/@href` |
+| **AnalyzeByJSonPath** | JSONPath表达式 | `$.data.books[*].name` |
+| **AnalyzeByRegex** | 正则匹配 | `书名：([^，]+)` |
+
+---
+
+## 各解析器返回类型
+
+| 解析器 | 调用的方法 | 返回类型 |
+|--------|-----------|----------|
+| AnalyzeByJSonPath | `.getStringList(rule)` | `List<String>` |
+| AnalyzeByJSonPath | `.getString(rule)` | `String?` |
+| AnalyzeByJSonPath | `.getObject(rule)` | `Any` |
+| AnalyzeByJSonPath | `.getList(rule)` | `ArrayList<Any>` |
+| AnalyzeByXPath | `.getStringList(rule)` | `List<String>` |
+| AnalyzeByJSoup | `.getStringList(rule)` | `List<String>` |
+
+---
+
+## 简单场景 vs 复杂场景
+
+### 简单场景（大多数书源）
+
+**特点**：每个规则字段单独使用，无连接符
 
 ```
-搜索请求 → 书源1 → 书源2 → 书源3 → ...
-         (失败)   (失败)   (成功)
-              ↓
-         返回结果
+ruleBookInfo:
+  name: "h1>a@text"      ← 单规则，直接解析
+  author: ".author@text"  ← 单规则，直接解析
 ```
 
-### 3. 模板方法模式
+**流程**：setContent → getString(单规则) → 返回结果
+
+### 复杂场景（少数书源）
+
+**特点**：一个字段包含多个子规则，用连接符组合
 
 ```
-analyzeBook()
-    ↓
-prepareRequest()    ← 子类实现
-    ↓
-parseResponse()    ← 子类实现
-    ↓
-formatResult()     ← 统一格式
+规则: "@XPath://div && .title @@ $.author"
 ```
+
+**流程**：setContent → splitSourceRule() → 切分成多个 SourceRule → 遍历执行
+
+---
 
 ## 学习任务
 
-1. **打开** `RuleAnalyzer.kt`，分析入口方法
-2. **打开** `AnalyzeByXPath.kt`，理解 XPath 解析流程
-3. **理解** 为什么需要多种解析器
-4. **分析** JS 增强在什么场景下需要
-
-## 相关文件
-
-| 文件 | 说明 |
-|------|------|
-| `model/analyzeRule/RuleAnalyzer.kt` | 规则分析器 |
-| `model/analyzeRule/AnalyzeByXPath.kt` | XPath 解析 |
-| `model/analyzeRule/AnalyzeByJSoup.kt` | JSoup 解析 |
-| `model/analyzeRule/AnalyzeByRegex.kt` | 正则解析 |
-| `data/entities/BookSource.kt` | 书源规则字段 |
-| `modules/rhino/` | JS 引擎模块 |
+1. **打开** `AnalyzeRule.kt`，找到 `getStringList()` 方法（第176行）
+2. **追踪** `setContent()` → `splitSourceRule()` → `when(mode)` 分发流程
+3. **打开** `AnalyzeByJSonPath.kt`，理解 `getStringList()` 内部如何调用 `ctx.read()`
+4. **实践**：用书源测试不同前缀（@XPath: / @Json: / 无前缀）的效果

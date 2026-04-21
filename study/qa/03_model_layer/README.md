@@ -332,11 +332,11 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
----
+***
 
-## 问答记录
+# 问答记录
 
-### Q1: RuleAnalyzer 规则分析器入口是怎么工作的？
+## Q1: RuleAnalyzer 规则分析器入口是怎么工作的？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -367,7 +367,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Q2: RuleAnalyzer 有哪些核心函数？
+## Q2: RuleAnalyzer 有哪些核心函数？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -404,7 +404,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Q3: 为什么不用正则表达式？
+## Q3: 为什么不用正则表达式？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -434,7 +434,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Q4: splitRule() 具体是怎么工作的？
+## Q4: splitRule() 具体是怎么工作的？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -457,7 +457,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Q5: 内嵌规则 innerRule() 是什么？
+## Q5: 内嵌规则 innerRule() 是什么？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -482,7 +482,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Q6: 解析器是怎么选择的？AnalyzeRule 的流程是什么？
+## Q6: 解析器是怎么选择的？AnalyzeRule 的流程是什么？
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -499,7 +499,7 @@
 │  │ @Json:            → Json       AnalyzeByJSonPath   │   │
 │  │ $. 或 $[         → Json       AnalyzeByJSonPath   │   │
 │  │ / 开头           → XPath      AnalyzeByXPath      │   │
-│  │ {{...}}          → Js         Rhino执行           │   │
+│  │ @js: / <js>      → Js         Rhino执行           │   │
 │  │ 无前缀           → Default    AnalyzeByJSoup      │   │
 │  └─────────────────────────────────────────────────────┘   │
 │       ↓                                                     │
@@ -550,6 +550,655 @@ splitSourceRule("@XPath://div") ← 解析规则，识别前缀
 SourceRule("//div", Mode.XPath) ← 创建规则对象
     ↓
 getAnalyzeByXPath(content).getStringList("//div") ← 分发到XPath解析器
+```
+
+***
+
+## Q7: AnalyzeRule 的核心职责是什么？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   AnalyzeRule 核心职责                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. 接收内容：setContent(html/json)                        │
+│     • 保存原始内容，供后续解析使用                           │
+│     • 判断是 JSON 还是 HTML                                │
+│                                                             │
+│  2. 切分规则：splitSourceRule()                            │
+│     • 识别规则前缀（@XPath:/@Json:/$.）                     │
+│     • 切分连接符（@@/&&/||）                               │
+│     • 处理内嵌规则（{{}}/{}）                              │
+│                                                             │
+│  3. 分发解析器：根据 SourceRule.mode                        │
+│     • Mode.XPath → AnalyzeByXPath                          │
+│     • Mode.Json → AnalyzeByJSonPath                        │
+│     • Mode.Js → Rhino JS 引擎                              │
+│     • Mode.Default → AnalyzeByJSoup                        │
+│     • Mode.Regex → AnalyzeByRegex                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+注意：HTTP 请求不在 AnalyzeRule 里，是在外层（WebBook）发的
+```
+
+完整数据流向
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      书源规则解析数据流向                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  书源规则字段                                               │
+│  ruleSearch.name = "@XPath://div[@class=title]"           │
+│       ↓                                                     │
+│  splitSourceRule() 切分规则字符串                          │
+│       ↓                                                     │
+│  SourceRule(mode = XPath, rule = "//div[@class=title]")   │
+│       ↓                                                     │
+│  when(mode) 分发到具体解析器                                │
+│       ↓                                                     │
+│  getAnalyzeByXPath(content).getStringList("//div")        │
+│       ↓                                                     │
+│  返回提取结果 ["斗破苍穹", "完美世界", ...]                 │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Q8: splitSourceRule() 切分流程是怎样的？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               splitSourceRule() 切分流程                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  输入: "@XPath://div @@ .book {{jsCode}} .author"          │
+│       ↓                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 第一步：识别 JS 代码块                                │   │
+│  │ • JS_PATTERN 匹配 <js>...</js> 或 @js:...           │   │
+│  │ • JS 代码块单独作为一个 SourceRule(mode=Js)        │   │
+│  │ • 剩余文本继续处理                                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 第二步：剩余文本按默认模式处理                        │   │
+│  │ • 生成 SourceRule(mode=Default)                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  输出: [                                                   │
+│    SourceRule("@XPath://div", Mode.XPath),                 │
+│    SourceRule("@@ .book", Mode.Default),                   │
+│    SourceRule("{{jsCode}}", Mode.Js),                      │
+│    SourceRule(".author", Mode.Default)                      │
+│  ]                                                         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Q9: SourceRule.init() 三步处理是什么？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               SourceRule.init() 三步处理                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 第一步：根据前缀识别 Mode（解析器类型）              │   │
+│  │                                                       │   │
+│  │ 前缀              → Mode        解析器              │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ @XPath:           → XPath      AnalyzeByXPath      │   │
+│  │ @Json:            → Json       AnalyzeByJSonPath   │   │
+│  │ $. 或 $[         → Json       AnalyzeByJSonPath   │   │
+│  │ / 开头           → XPath      AnalyzeByXPath      │   │
+│  │ @js: / <js>     → Js         Rhino执行           │   │
+│  │ 无前缀           → Default    AnalyzeByJSoup      │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 第二步：分离 @put 规则（保存变量）                   │   │
+│  │ @put{"key": "value"} 存入 putMap，供后续使用       │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 第三步：拆分 {{}} 和 @get: 内嵌规则                  │   │
+│  │ • {{jsCode}} → 作为 JS 表达式执行                  │   │
+│  │ • @get:key → 从已保存变量中取值                     │   │
+│  │ • $1, $2 → 正则捕获组引用                          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Q10: 规则分发的核心代码是什么？
+
+```kotlin
+// getStringList() 中的核心分发逻辑
+for (sourceRule in ruleList) {
+    putRule(sourceRule.putMap)           // 保存 @put 变量
+    sourceRule.makeUpRule(result)         // 替换 {{}} 和 @get:
+
+    result = when (sourceRule.mode) {
+        // JS 引擎执行
+        Mode.Js -> evalJS(rule, result)
+
+        // JSONPath 解析
+        Mode.Json -> getAnalyzeByJSonPath(result).getStringList(rule)
+
+        // XPath 解析
+        Mode.XPath -> getAnalyzeByXPath(result).getStringList(rule)
+
+        // JSoup 解析（默认）
+        Mode.Default -> getAnalyzeByJSoup(result).getStringList(rule)
+
+        // 其他情况，原样返回
+        else -> rule
+    }
+
+    // 应用正则替换规则
+    if (sourceRule.replaceRegex.isNotEmpty()) {
+        result = replaceRegex(result.toString(), sourceRule)
+    }
+}
+```
+
+## Q11: AnalyzeByJSonPath 做了什么？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  JSONPath 解析器工作流程                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  输入                                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ JSON字符串 或 JSON对象                               │   │
+│  │ {"data":{"books":[{"name":"斗破苍穹"},...]}}        │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  解析                                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ JsonPath.parse() → ReadContext                     │   │
+│  │ 将原始文本解析为可查询的上下文                       │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  提取                                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ ctx.read("$.data.books[*].name")                   │   │
+│  │ 执行JSONPath表达式，从文档中提取数据                 │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  输出                                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ List → joinToString("\n")                          │   │
+│  │ ["斗破苍穹", "完美世界"] → "斗破苍穹\n完美世界"     │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| 方法 | 用途 | 返回类型 |
+|------|------|----------|
+| `getString()` | 提取单值 | `String?` |
+| `getStringList()` | 提取列表 | `List<String>` |
+
+## Q12: AnalyzeRule 完整流程是怎样的？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        AnalyzeRule                            │
+│                      （中枢调度中心）                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   收到原始内容（HTML/JSON）                                  │
+│          ↓                                                  │
+│   收到书源规则字符串                                         │
+│          ↓                                                  │
+│   splitSourceRule() 切分规则                                │
+│          ↓                                                  │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │           分发到各大解析器                           │   │
+│   │                                                     │   │
+│   │   Mode.Js      → Rhino JS 引擎                     │   │
+│   │   Mode.Json    → AnalyzeByJSonPath                │   │
+│   │   Mode.XPath   → AnalyzeByXPath                  │   │
+│   │   Mode.Default → AnalyzeByJSoup                   │   │
+│   │   Mode.Regex   → AnalyzeByRegex                   │   │
+│   │                                                     │   │
+│   └─────────────────────────────────────────────────────┘   │
+│          ↓                                                  │
+│   收集各解析器返回的结果                                      │
+│          ↓                                                  │
+│   整理、合并、转换格式                                       │
+│          ↓                                                  │
+│   返回统一的 List<String> 给调用方                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**简单说**：AnalyzeRule = 入口 + 调度 + 汇总返回
+
+---
+
+## Q12: AnalyzeRule 调用 JsonPath 解析器的完整数据流？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    AnalyzeRule 调用链                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  WebBook.analyzeBookInfo()                                 │
+│       ↓                                                    │
+│  AnalyzeRule.setContent(jsonString)                        │
+│       ↓                                                    │
+│  getStringList("$.data.books[*].name")                    │
+│       ↓                                                    │
+│  splitSourceRule() → [SourceRule(mode=Json, rule=...)]   │
+│       ↓                                                    │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ when (mode) {                                        │   │
+│  │   Mode.Json → getAnalyzeByJSonPath(content)          │   │
+│  │              ↓                                        │   │
+│  │              .getStringList("...")                   │   │
+│  │ }                                                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                    │
+│  返回 List<String>                                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**详细调用步骤**：
+
+```
+1. 输入
+   jsonString = '{"data":{"books":[{"name":"斗破苍穹"},...]}}'
+   ruleStr = "$.data.books[*].name"
+
+2. setContent(jsonString)
+   ┌─────────────────────────────────────────────────────┐
+   │ this.content = jsonString                          │
+   │ this.isJSON = true                                 │
+   └─────────────────────────────────────────────────────┘
+
+3. getStringList("$.data.books[*].name")
+   ┌─────────────────────────────────────────────────────┐
+   │ ruleList = splitSourceRule(ruleStr)                │
+   │ → [SourceRule(mode=Json, rule="$.data.books[*].name")]
+   └─────────────────────────────────────────────────────┘
+
+4. 分发到解析器
+   ┌─────────────────────────────────────────────────────┐
+   │ result = getAnalyzeByJSonPath(content)              │
+   │              .getStringList("$.data.books[*].name")
+   └─────────────────────────────────────────────────────┘
+```
+
+**传递了什么**：
+
+| 步骤 | 传递内容 | 类型 |
+|------|----------|------|
+| setContent | JSON字符串 | `String` |
+| getStringList | 规则字符串 | `"$.data.books[*].name"` |
+| getAnalyzeByJSonPath | 原始内容 | `Any` |
+| ctx.read() | JSONPath规则 | `"$.data.books[*].name"` |
+
+---
+
+## Q13: @Suppress 和 @Keep 注解是什么？ReadContext 是什么？
+
+| 注解 | 来源 | 作用 |
+|------|------|------|
+| `@Suppress("RegExpRedundantEscape")` | Kotlin | 忽略正则表达式冗余转义的警告 |
+| `@Keep` | AndroidX `androidx.annotation.Keep` | 防止 ProGuard/R8 混淆时删除这个类 |
+
+**ReadContext**：
+
+```
+来源: com.jayway.jsonpath（第三方库 Jayway JsonPath）
+作用: JsonPath 库的上下文对象，用于执行 JSONPath 查询
+
+// JsonPath.parse() 返回 ReadContext
+val ctx: ReadContext = JsonPath.parse(jsonString)
+val name = ctx.read("$.data.name")  // 执行查询
+```
+
+---
+
+## Q14: companion object 是什么？parse 为什么要放在里面？
+
+**companion object** = Java 中的 **static**
+
+```kotlin
+class AnalyzeByJSonPath(json: Any) {
+    companion object {
+        fun parse(json: Any): ReadContext { ... }
+    }
+}
+
+// 调用方式
+val ctx = AnalyzeByJSonPath.parse(jsonString)  // 用类名调用
+```
+
+**为什么要放 companion object？**
+
+因为 `parse()` 不需要依赖实例状态，可以直接通过类名调用。
+
+---
+
+## Q15: parse 和 getString 的区别？
+
+| 方法 | 职责 | 层级 |
+|------|------|------|
+| `parse()` | 解析 JSON 字符串 → ReadContext | 初始化（一次性） |
+| `getString()` | 从上下文中提取数据 | 使用（可多次） |
+
+```
+parse()      → 准备食材（一次性）
+getString()  → 炒菜（可多次）
+```
+
+```kotlin
+// parse - 构造方法，创建 ReadContext
+val ctx: ReadContext = AnalyzeByJSonPath.parse(jsonString)
+
+// getString - 查询方法，从 ctx 中提取值
+analyzer.getString("$.data.name")  // 内部调用 ctx.read()
+```
+
+---
+
+## Q16: AnalyzeByJSonPath 四个函数的区别和调用场景？
+
+```
+输入: {"data":{"books":[{"name":"斗破苍穹"},{"name":"完美世界"}]}}
+```
+
+| 函数 | 返回类型 | 用途 | 示例 |
+|------|----------|------|------|
+| `getString()` | `String?` | 取单字符串 | `"斗破苍穹"` |
+| `getStringList()` | `List<String>` | 取字符串列表 | `["斗破苍穹", "完美世界"]` |
+| `getObject()` | `Any` | 取原始对象 | `{"name":"斗破苍穹",...}` |
+| `getList()` | `ArrayList<Any>?` | 取原始列表 | `[{}, {}, {}]` |
+
+**调用对应关系**：
+
+```
+AnalyzeRule.getString()     → getAnalyzeByJSonPath().getString()
+AnalyzeRule.getStringList() → getAnalyzeByJSonPath().getStringList()
+AnalyzeRule.getElement()    → getAnalyzeByJSonPath().getObject()
+AnalyzeRule.getElements()  → getAnalyzeByJSonPath().getList()
+```
+
+---
+
+## Q17: AnalyzeByJSonPath 内部详细数据流？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              AnalyzeByJSonPath.getStringList() 内部流程         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  输入                                                        │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ JSON: {"data":{"books":[{"name":"斗破苍穹"},...]}} │   │
+│  │ Rule: "$.data.books[*].name"                      │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  构造 ReadContext                                           │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ ctx = JsonPath.parse(json)                          │   │
+│  │ 将 JSON 字符串解析为可查询的上下文                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  RuleAnalyzer 切分连接符                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ rules = splitRule("&&", "||", "%%")                │   │
+│  │ 单规则时不切分，结果: ["$.data.books[*].name"]       │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  内嵌规则处理                                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ innerRule("{$.") { getString(it) }                  │   │
+│  │ 替换 {$.xxx} 形式的内嵌规则                         │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  执行 JSONPath 查询                                          │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ ctx.read<Any>("$.data.books[*].name")              │   │
+│  │ → List<Any> = ["斗破苍穹", "完美世界"]              │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  结果转换                                                    │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ for (o in obj) result.add(o.toString())           │   │
+│  │ → ["斗破苍穹", "完美世界"]                          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           ↓                                 │
+│  输出: List<String>                                         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Q18: 四个函数的数据流对比？
+
+```
+输入: {"data":{"books":[{"name":"斗破苍穹"},{"name":"完美世界"}]}}
+Rule: "$.data.books[*].name"
+
+┌─────────────────────────────────────────────────────────────┐
+│ getString() → String?                                       │
+│                                                             │
+│ ctx.read<Any>("$.data.books[*].name")                      │
+│ → ["斗破苍穹", "完美世界"]                                  │
+│ → joinToString("\n")                                       │
+│ → "斗破苍穹\n完美世界"                                      │
+│                                                             │
+│ ⚠️ 列表会被合并成换行分隔的字符串                            │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ getStringList() → List<String>                             │
+│                                                             │
+│ ctx.read<Any>("$.data.books[*].name")                      │
+│ → ["斗破苍穹", "完美世界"]                                  │
+│ → for (o in obj) result.add(o.toString())                   │
+│ → ["斗破苍穹", "完美世界"]  ← 保持列表格式                  │
+│                                                             │
+│ ✅ 返回真正的 List<String>                                  │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ getObject() → Any                                           │
+│                                                             │
+│ ctx.read("$.data.books[0]")                                 │
+│ → {"name":"斗破苍穹","author":"天蚕土豆"}  ← 原始JSON对象  │
+│                                                             │
+│ ⚠️ 返回对象，不转字符串                                     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ getList() → ArrayList<Any>?                                │
+│                                                             │
+│ ctx.read("$.data.books[*]")                                │
+│ → [{"name":"斗破苍穹",...}, {"name":"完美世界",...}]       │
+│                                                             │
+│ ✅ 返回原始对象列表                                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Q19: 连接符 && || %% 在 getStringList 中如何处理？
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    连接符处理流程                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  输入: "$.name && $.author"                                 │
+│         ↓                                                   │
+│  splitRule("&&", "||", "%%")                               │
+│         ↓                                                   │
+│  切分为: ["$.name", "$.author"]                            │
+│         ↓                                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ for (rl in rules) {                                  │   │
+│  │     temp = getStringList(rl)                        │   │
+│  │     results.add(temp)                               │   │
+│  │ }                                                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│         ↓                                                   │
+│  results = [["斗破苍穹"], ["天蚕土豆"]]                    │
+│         ↓                                                   │
+│  result.addAll(temp)                                       │
+│         ↓                                                   │
+│  输出: ["斗破苍穹", "天蚕土豆"]  ← && 合并所有结果         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| 连接符 | 行为 | 示例 |
+|--------|------|------|
+| `&&` | 合并所有 | `["a"] && ["b"]` → `["a", "b"]` |
+| `\|\|` | 取第一个 | `["a"] \|\| ["b"]` → `["a"]` |
+| `%%` | 交替合并 | `["a","b"] %% ["1","2"]` → `["a","1","b","2"]` |
+
+---
+
+## Q20: AnalyzeRule 如何收集各解析器返回的结果？
+
+**核心机制**：result 变量贯穿整个循环，每次解析后更新 result，下次循环用上次的 result 作为输入
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  for (sourceRule in ruleList)               │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  result = content  ← 初始为原始内容                         │
+│       ↓                                                     │
+│  第一次循环:                                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ result = getAnalyzeByXPath(result).getStringList()  │   │
+│  │ → result = List<String>                            │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  第二次循环: ← 上次的 result 作为这次的输入                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ result = getAnalyzeByJSoup(result).getStringList() │   │
+│  │ → result = List<String>                            │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       ↓                                                     │
+│  最终 result ← 最后一次循环的结果                           │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**源码核心**：
+
+```kotlin
+result = when (sourceRule.mode) {
+    Mode.Js      → evalJS(rule, result)                      // 返回 Any?
+    Mode.Json    → getAnalyzeByJSonPath(result).getStringList(rule)  // 返回 List<String>
+    Mode.XPath   → getAnalyzeByXPath(result).getStringList(rule)     // 返回 List<String>
+    Mode.Default → getAnalyzeByJSoup(result).getStringList(rule)       // 返回 List<String>
+    else         → rule                                      // 返回 String
+}
+```
+
+**各解析器返回类型**：
+
+| 解析器 | 调用的方法 | 返回类型 |
+|--------|-----------|----------|
+| AnalyzeByJSonPath | `.getStringList(rule)` | `List<String>` |
+| AnalyzeByXPath | `.getStringList(rule)` | `List<String>` |
+| AnalyzeByJSoup | `.getStringList(rule)` | `List<String>` |
+| evalJS | 直接执行JS | `Any?` |
+
+**最终返回**：
+
+```
+getStringList() → 返回 List<String>?
+
+最终转换：
+- result 是 List → 直接返回
+- result 是 String → 按 "\n" 分割成 List
+- result 是 null → 返回 null
+```
+
+**简单说**：result 就是个"中转站"——初始是原始内容，每次循环被解析结果覆盖，最后一次循环的结果就是返回值。
+
+---
+
+## Q21: 循环是链式处理吗？实际书源是怎么用的？
+
+**不是所有规则都需要链式处理。实际书源中，大多数是简单场景。**
+
+### 简单场景（大多数书源）
+
+**特点**：每个规则字段独立使用，无连接符
+
+```
+书源规则:
+{
+  "ruleSearch": {
+    "name": "a.1@text",      ← 单规则
+    "author": "p.1@text",    ← 单规则
+    "coverUrl": "img@src"    ← 单规则
+  }
+}
+```
+
+**流程**：每个字段单独调用 `getStringList()`，各自独立解析
+
+```
+提取书名: getStringList("a.1@text") → ["斗破苍穹"]
+提取作者: getStringList("p.1@text") → ["天蚕土豆"]
+提取封面: getStringList("img@src") → ["/cover.jpg"]
+```
+
+**for 循环只执行 1 次**，因为只有一个 SourceRule。
+
+### 复杂场景（少数书源）
+
+**特点**：一个字段包含多个子规则，用连接符组合
+
+```
+规则: "@XPath://div && .title @@ $.author"
+       ↓
+splitSourceRule() → [
+  SourceRule("@XPath://div", Mode.XPath),
+  SourceRule(".title", Mode.Default),
+  SourceRule("$.author", Mode.Json)
+]
+       ↓
+for 循环执行 3 次
+```
+
+---
+
+## Q22: 实际书源解析示例
+
+```
+原始HTML:
+<div class="item">
+  <a href="/book/1"><img src="/cover.jpg"/></a>
+  <a href="/book/1">斗破苍穹</a>
+  <p class="itemtxt"><p>天蚕土豆</p></p>
+</div>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+提取书名: getStringList("a.1@text")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. setContent(html) → 保存原始HTML
+2. splitSourceRule("a.1@text") → [SourceRule("a.1@text", Default)]
+3. for循环 (1个SourceRule，循环1次)
+   → Mode.Default → getAnalyzeByJSoup(content)
+   → .getStringList("a.1@text")
+4. 返回: ["斗破苍穹"]
 ```
 
 ---

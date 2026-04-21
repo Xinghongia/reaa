@@ -173,6 +173,12 @@ class AnalyzeRule(
         return getStringList(ruleList, mContent, isUrl)
     }
 
+    /**
+     * 获取字符串列表（对外接口）
+     * @param rule 规则字符串，会被 splitSourceRule() 切分
+     * @param mContent 可选的解析内容，默认使用 setContent 设置的内容
+     * @param isUrl 是否作为 URL 处理（会转换相对路径为绝对路径）
+     */
     @JvmOverloads
     fun getStringList(
         ruleList: List<SourceRule>,
@@ -183,16 +189,15 @@ class AnalyzeRule(
         val content = mContent ?: this.content
         if (content != null && ruleList.isNotEmpty()) {
             result = content
+            // NativeObject（JS对象）直接用键值访问
             if (result is NativeObject) {
                 val sourceRule = ruleList.first()
                 putRule(sourceRule.putMap)
                 sourceRule.makeUpRule(result)
                 result = if (sourceRule.getParamSize() > 1) {
-                    // get {{}}
-                    sourceRule.rule
+                    sourceRule.rule  // 多参数，取规则本身
                 } else {
-                    // 键值直接访问
-                    result[sourceRule.rule]
+                    result[sourceRule.rule]  // 单参数，键值直接访问
                 }
                 result?.let {
                     if (sourceRule.replaceRegex.isNotEmpty() && it is List<*>) {
@@ -204,20 +209,26 @@ class AnalyzeRule(
                     }
                 }
             } else {
+                // 遍历规则列表，链式执行
                 for (sourceRule in ruleList) {
-                    putRule(sourceRule.putMap)
-                    sourceRule.makeUpRule(result)
-                    result ?: continue
+                    putRule(sourceRule.putMap)  // 保存 @put 变量
+                    sourceRule.makeUpRule(result)  // 替换 {{}} 和 @get:
+                    result ?: continue  // 结果为空跳过
+
                     val rule = sourceRule.rule
                     if (rule.isNotEmpty()) {
+                        // ============================================================
+                        // 核心：根据 SourceRule.mode 分发到具体解析器
+                        // ============================================================
                         result = when (sourceRule.mode) {
-                            Mode.Js -> evalJS(rule, result)
-                            Mode.Json -> getAnalyzeByJSonPath(result).getStringList(rule)
-                            Mode.XPath -> getAnalyzeByXPath(result).getStringList(rule)
-                            Mode.Default -> getAnalyzeByJSoup(result).getStringList(rule)
-                            else -> rule
+                            Mode.Js -> evalJS(rule, result)  // JS 引擎执行
+                            Mode.Json -> getAnalyzeByJSonPath(result).getStringList(rule)  // JSONPath
+                            Mode.XPath -> getAnalyzeByXPath(result).getStringList(rule)  // XPath
+                            Mode.Default -> getAnalyzeByJSoup(result).getStringList(rule)  // JSoup
+                            else -> rule  // 未识别模式，原样返回
                         }
                     }
+                    // 应用正则替换规则
                     if (sourceRule.replaceRegex.isNotEmpty() && result is List<*>) {
                         val newList = ArrayList<String>()
                         for (item in result) {
@@ -231,9 +242,11 @@ class AnalyzeRule(
             }
         }
         if (result == null) return null
+        // 字符串按换行分割成列表
         if (result is String) {
             result = result.split("\n")
         }
+        // URL 处理：转换相对路径为绝对路径
         if (isUrl) {
             val urlList = ArrayList<String>()
             if (result is List<*>) {
@@ -488,33 +501,42 @@ class AnalyzeRule(
 
     /**
      * 分解规则生成规则列表
+     * 将规则字符串切分成 SourceRule 对象列表
+     * @param ruleStr 原始规则字符串，如 "@XPath://div[@class=book]##正则##替换"
+     * @param allInOne 是否为全匹配模式（正则）
      */
     fun splitSourceRule(ruleStr: String?, allInOne: Boolean = false): List<SourceRule> {
         if (ruleStr.isNullOrEmpty()) return emptyList()
         val ruleList = ArrayList<SourceRule>()
-        var mMode: Mode = Mode.Default
+        var mMode: Mode = Mode.Default  // 默认使用 JSoup 解析器
         var start = 0
-        //仅首字符为:时为AllInOne，其实:与伪类选择器冲突，建议改成?更合理
+
+        // 仅首字符为 : 时为 AllInOne 模式（正则匹配）
         if (allInOne && ruleStr.startsWith(":")) {
             mMode = Mode.Regex
             isRegex = true
-            start = 1
+            start = 1  // 跳过开头的 :
         } else if (isRegex) {
             mMode = Mode.Regex
         }
+
         var tmp: String
+        // JS_PATTERN 匹配 <js>...</js> 或 @js:... 格式的 JS 代码块
         val jsMatcher = JS_PATTERN.matcher(ruleStr)
         while (jsMatcher.find()) {
+            // 处理 JS 代码块之前的规则文本
             if (jsMatcher.start() > start) {
                 tmp = ruleStr.substring(start, jsMatcher.start()).trim { it <= ' ' }
                 if (tmp.isNotEmpty()) {
                     ruleList.add(SourceRule(tmp, mMode))
                 }
             }
+            // 将 JS 代码块作为独立的 SourceRule 添加，模式为 Mode.Js
             ruleList.add(SourceRule(jsMatcher.group(2) ?: jsMatcher.group(1), Mode.Js))
             start = jsMatcher.end()
         }
 
+        // 处理剩余的规则文本
         if (ruleStr.length > start) {
             tmp = ruleStr.substring(start).trim { it <= ' ' }
             if (tmp.isNotEmpty()) {
@@ -550,71 +572,94 @@ class AnalyzeRule(
         private val defaultRuleType = 0
 
         init {
+            // ============================================================
+            // 第一步：根据规则前缀识别解析模式 Mode
+            // ============================================================
             rule = when {
+                // JS 或正则模式：保持原样，不做前缀处理
                 mode == Mode.Js || mode == Mode.Regex -> ruleStr
+
+                // @CSS: 前缀 → 使用 JSoup (CSS选择器)
                 ruleStr.startsWith("@CSS:", true) -> {
                     mode = Mode.Default
                     ruleStr
                 }
 
+                // @@ 前缀 → 并列关系，也使用 JSoup
                 ruleStr.startsWith("@@") -> {
                     mode = Mode.Default
-                    ruleStr.substring(2)
+                    ruleStr.substring(2)  // 去掉 @@ 前缀
                 }
 
+                // @XPath: 前缀 → XPath 解析器
                 ruleStr.startsWith("@XPath:", true) -> {
                     mode = Mode.XPath
-                    ruleStr.substring(7)
+                    ruleStr.substring(7)  // 去掉 @XPath: 前缀
                 }
 
+                // @Json: 前缀 → JSONPath 解析器
                 ruleStr.startsWith("@Json:", true) -> {
                     mode = Mode.Json
-                    ruleStr.substring(6)
+                    ruleStr.substring(6)  // 去掉 @Json: 前缀
                 }
 
+                // JSON 内容 或 $. / $[ 开头 → JSONPath 解析器
                 isJSON || ruleStr.startsWith("$.") || ruleStr.startsWith("$[") -> {
                     mode = Mode.Json
                     ruleStr
                 }
 
-                ruleStr.startsWith("/") -> {//XPath特征很明显,无需配置单独的识别标头
+                // / 开头 → XPath 特征很明显，无需前缀也能识别
+                ruleStr.startsWith("/") -> {
                     mode = Mode.XPath
                     ruleStr
                 }
 
+                // 其他情况 → 默认使用 JSoup
                 else -> ruleStr
             }
-            //分离put
+
+            // ============================================================
+            // 第二步：分离 @put 规则（用于保存变量）
+            // ============================================================
             rule = splitPutRule(rule, putMap)
-            //@get,{{ }}, 拆分
+
+            // ============================================================
+            // 第三步：拆分 @get 和 {{}} 内嵌规则
+            // ============================================================
             var start = 0
             var tmp: String
+            // evalPattern 匹配 {{xxx}} 和 @get:xxx 格式
             val evalMatcher = evalPattern.matcher(rule)
 
             if (evalMatcher.find()) {
                 tmp = rule.substring(start, evalMatcher.start())
+                // 如果包含 ## 但不在开头，说明是分隔符而非正则
                 if (mode != Mode.Js && mode != Mode.Regex &&
                     (evalMatcher.start() == 0 || !tmp.contains("##"))
                 ) {
-                    mode = Mode.Regex
+                    mode = Mode.Regex  // 切换到正则模式
                 }
                 do {
                     if (evalMatcher.start() > start) {
                         tmp = rule.substring(start, evalMatcher.start())
-                        splitRegex(tmp)
+                        splitRegex(tmp)  // 处理正则部分
                     }
                     tmp = evalMatcher.group()
                     when {
+                        // @get:xxx → 从已保存变量中获取值
                         tmp.startsWith("@get:", true) -> {
                             ruleType.add(getRuleType)
                             ruleParam.add(tmp.substring(6, tmp.lastIndex))
                         }
 
+                        // {{xxx}} → 作为 JS 表达式执行
                         tmp.startsWith("{{") -> {
                             ruleType.add(jsRuleType)
                             ruleParam.add(tmp.substring(2, tmp.length - 2))
                         }
 
+                        // 其他情况 → 作为正则处理
                         else -> {
                             splitRegex(tmp)
                         }
@@ -622,6 +667,7 @@ class AnalyzeRule(
                     start = evalMatcher.end()
                 } while (evalMatcher.find())
             }
+            // 处理剩余的非 {{}} 部分
             if (rule.length > start) {
                 tmp = rule.substring(start)
                 splitRegex(tmp)
@@ -629,7 +675,8 @@ class AnalyzeRule(
         }
 
         /**
-         * 拆分\$\d{1,2}
+         * 拆分 $\d{1,2} 格式的正则捕获组引用
+         * 例如：$1 表示引用第一个分组，$2 表示第二个分组
          */
         private fun splitRegex(ruleStr: String) {
             var start = 0
