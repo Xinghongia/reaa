@@ -717,3 +717,182 @@ try {
 3. 用 `@js:` + `java.ajax()` 绕过验证
 4. 用正则提取内容
 5. 测试完整流程
+
+---
+
+## 附录：JavaScript 桥接架构
+
+### Q1: Android 能执行 JS 代码吗？
+
+**问**：安卓原生是不能执行 JS 代码的对吧？但能够实现 Java 代码？书源里面的 JS 代码能够调用 `java` 对象？为什么啊？所以说最后还是安卓发送这些请求功能？
+
+**答**：你的理解基本正确，让我更清晰地解释这个架构。
+
+#### Android 能执行 JS 代码吗？
+
+**能**，但不是原生支持，需要引入 **JS 引擎**。
+
+```
+Android 原生 ──不能──► 直接执行 JS
+
+Android + Rhino 引擎 ──能──► 执行 JS
+```
+
+Legado 集成了一个叫 **Rhino** 的 JS 引擎，所以 Android 应用可以执行 JS 代码。
+
+#### 调用流程（关键问题）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        书源规则解析流程                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. 书源规则（字符串）                                                     │
+│     "@js: var html = java.ajax(url); log(html);"                          │
+│                                                                             │
+│           ▼                                                                │
+│                                                                             │
+│  2. Legado 的 Rhino JS 引擎执行这段 JS 代码                                │
+│     （JS 引擎在 Android 里面运行）                                          │
+│                                                                             │
+│           ▼                                                                │
+│                                                                             │
+│  3. JS 代码调用 java.ajax()                                               │
+│     （JS 引擎内置的 bridge，发现 java 对象就转发）                           │
+│                                                                             │
+│           ▼                                                                │
+│                                                                             │
+│  4. 转发到 JsExtensions.kt 的 ajax() 方法                                  │
+│     （这是 Kotlin/Java 代码）                                               │
+│                                                                             │
+│           ▼                                                                │
+│                                                                             │
+│  5. ajax() 方法内部用 OkHttp 发送网络请求                                  │
+│     （真正的 Android 网络请求！）                                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 回答你的问题
+
+| 问题 | 答案 |
+|------|------|
+| **安卓原生不能执行 JS？** | 对，需要 JS 引擎 |
+| **安卓原生能实现 Java 代码？** | 对，原生支持 |
+| **JS 代码能调用 java 对象？** | 对，这是 Legado 故意设计的桥接层 |
+| **最终是谁发送请求？** | **Android（通过 OkHttp）**，JS 只是写了调用逻辑 |
+
+#### 代码验证
+
+看 `JsExtensions.kt` 里的 ajax 方法：
+
+```kotlin
+fun ajax(url: Any, callTimeout: Long?): String? {
+    // ...
+    val analyzeUrl = AnalyzeUrl(
+        urlStr,
+        source = getSource(),
+        callTimeout = callTimeout,
+        coroutineContext = context
+    )
+    return kotlin.runCatching {
+        analyzeUrl.getStrResponse().body  // <-- 这里才是真正发请求的地方
+    }.getOrElse {
+        it.stackTraceStr
+    }
+}
+```
+
+可以看到，`ajax()` 方法内部用的是 `AnalyzeUrl.getStrResponse()`，这底层就是 **OkHttp** 在发请求。
+
+#### 总结
+
+> **JS 代码只是"命令"，真正干活的是 Android！**
+>
+> JS 引擎负责解析书源规则，发现 `java.ajax()` 就转发给 Android，Android 用 OkHttp 真正发请求，然后把结果返回给 JS。
+
+---
+
+### Q2: 什么叫包含了在 JavaScript 中，又为什么通过 java 对象调用？
+
+#### 概念解释
+
+##### 1. 书源规则支持 JavaScript
+
+Legado 的书源规则（如正文提取、目录分析等）允许使用 **JavaScript** 来编写解析逻辑。这是因为：
+- 有些网站的内容需要动态执行 JS 才能获取（如加密内容、混淆数据）
+- JS 语法灵活，可以处理复杂的字符串操作
+
+##### 2. JavaScript 不能直接访问 Android 功能
+
+问题来了：JavaScript 运行在 **Rhino 引擎**（一个 JS 解释器）中，它本身：
+- ❌ 不能发起网络请求
+- ❌ 不能读写文件
+- ❌ 不能访问 Cookie
+- ❌ 不能弹出 Toast 提示
+
+这些功能是 Android 系统提供的，JS 引擎根本无法直接调用。
+
+##### 3. 通过 `java` 对象桥接
+
+所以 Legado 设计了一个桥接层：
+
+```
+JavaScript 代码                    Kotlin/Android 原生代码
+┌─────────────────────┐           ┌─────────────────────────┐
+│  java.ajax(url)     │ ───────►  │  JsExtensions.ajax()    │
+│  java.log("hello")  │ ───────►  │  JsExtensions.log()     │
+│  java.getCookie()   │ ───────►  │  JsExtensions.getCookie│
+└─────────────────────┘           └─────────────────────────┘
+```
+
+在书源 JS 规则中，你可以这样写：
+
+```javascript
+// 这些是 JS 代码，可以写进书源的 @js: 规则里
+var html = java.ajax("https://example.com/book/1");  // 调用 Android 网络请求
+java.log("抓取成功");                                  // 调用 Android 日志
+var content = java.readTxtFile("chapter1.txt");       // 调用 Android 文件读取
+```
+
+##### 4. JsExtensions.kt 的作用
+
+`JsExtensions.kt` 就是定义 **`java` 对象有哪些方法**：
+
+```kotlin
+interface JsExtensions {
+    fun ajax(url: Any): String?    // 供 JS 调用的网络请求方法
+    fun log(msg: Any?): Any?       // 供 JS 调用的日志方法
+    fun getCookie(tag: String): String  // 供 JS 调用的获取 Cookie 方法
+    // ... 共 80+ 个方法
+}
+```
+
+##### 5. 调用流程图
+
+```
+书源规则 JS 代码
+    │
+    ▼
+java.ajax(url)      ◄─── JS 语法调用 java 对象
+    │
+    ▼
+JsExtensions.kt     ◄─── 定义 java 对象有哪些方法
+    │
+    ▼
+Kotlin/Android     ◄─── 实际执行 Android 原生功能
+    │
+    ▼
+返回结果给 JS
+```
+
+##### 总结
+
+| 概念 | 解释 |
+|------|------|
+| **JS 代码** | 书源规则里写的 `@js: ...` 部分 |
+| **java 对象** | Legado 暴露给 JS 的桥梁对象 |
+| **JsExtensions.kt** | 定义这个 `java` 对象有哪些方法 |
+| **Kotlin 实现** | 实际调用 Android 系统功能 |
+
+简单理解就是：**JsExtensions.kt 让 JavaScript 能够"借道" Android 的功能来完成网络请求、文件操作等任务。**
